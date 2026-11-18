@@ -37,6 +37,7 @@ const COL = Object.fromEntries(CABECALHO_IG.map((c, i) => [c, i + 1]));
 const IG = "https://graph.instagram.com";
 const FB = "https://graph.facebook.com/v25.0";
 const ID_PADRAO = "17841448100380830"; // @fgvquant
+const EMAIL_AVISOS = "finquantfgv@gmail.com"; // recebe os avisos de posts para revisar e de token
 
 function igHost() {
   return PropertiesService.getScriptProperties().getProperty("IG_HOST") || IG;
@@ -524,7 +525,7 @@ function toast(msg) {
 
 function avisarPorEmail(assunto, corpo) {
   try {
-    MailApp.sendEmail(Session.getEffectiveUser().getEmail(), assunto, corpo);
+    MailApp.sendEmail(EMAIL_AVISOS, assunto, corpo);
   } catch (e) {
     // sem permissão de e-mail: fica só na planilha
   }
