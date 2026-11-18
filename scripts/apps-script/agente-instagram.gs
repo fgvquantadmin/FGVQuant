@@ -187,6 +187,7 @@ function buscarInstagram() {
     } catch (e) {
       r = { aba: "", campos: {}, observacao: "Erro ao ler o post: " + e.message };
     }
+    r.campos = Object.fromEntries(Object.entries(r.campos || {}).map(([c, v]) => [semFormato(c), v]));
     const destino = ABAS_DESTINO.includes(r.aba) ? r.aba : "";
     const faltando = destino
       ? (OBRIGATORIAS[destino] || []).filter((c) => !r.campos[c] && c !== "Foto")
@@ -251,7 +252,7 @@ function contextoDasAbas() {
   const abas = ABAS_DESTINO.map((nome) => {
     const campos = camposDaAba(nome).filter((c) => c.tipo !== "arquivo");
     const linhas = campos.map((c) => {
-      let s = "  - " + c.nome + " (" + FORMATO[c.tipo] + ")";
+      let s = "  - " + c.nome + ": formato " + FORMATO[c.tipo];
       if (c.opcoes) s += " opções: " + c.opcoes.join(" | ");
       if (c.obrigatoria) s += " [obrigatório]";
       if (c.nota) s += " — " + c.nota.replace(/\s+/g, " ");
@@ -315,7 +316,8 @@ function classificar(post, contexto, chave) {
     "5. Newsletter: Edição é o mês da edição (mm/aaaa); Resumo com até 400 caracteres, nas suas palavras; não preencha Texto.\n" +
     "6. Data do evento é a data em que ele acontece, não a do post. Se o post não disser o dia, use só o que souber e explique em observacao.\n" +
     "7. observacao: uma frase curta para quem vai revisar (o que ficou incerto). Vazio se estiver tudo claro.\n" +
-    "8. Texto em português do Brasil, sem hífen como conector entre frases.\n\n" +
+    "8. Texto em português do Brasil, sem hífen como conector entre frases.\n" +
+    "9. Em campos, cada chave é só o nome da coluna, exatamente como na lista (Data, não Data (dd/mm/aaaa)).\n\n" +
     "Responda sempre chamando a ferramenta registrar, uma única vez, mesmo quando a aba for ignorar.\n\n" +
     "Campos de cada aba:\n" +
     contexto;
@@ -453,11 +455,18 @@ function lerCampos(texto) {
     .forEach((linha) => {
       const i = linha.indexOf(":");
       if (i < 1) return;
-      const nome = linha.slice(0, i).trim();
+      const nome = semFormato(linha.slice(0, i));
       const valor = linha.slice(i + 1).trim();
       if (valor) campos[nome] = valor;
     });
   return campos;
+}
+
+/** "Data (dd/mm/aaaa)" → "Data": tira o formato que o modelo às vezes copia para o nome da coluna. */
+function semFormato(nome) {
+  return String(nome)
+    .replace(/\s*\((dd\/mm\/aaaa|mm\/aaaa|aaaa\.1 ou aaaa\.2)\)\s*$/i, "")
+    .trim();
 }
 
 /** Converte do formato da planilha (dd/mm/aaaa, mm/aaaa) para o que salvarLinha espera. */
