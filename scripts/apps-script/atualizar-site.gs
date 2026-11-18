@@ -5,6 +5,7 @@
  *  - "Adicionar linha nesta aba…": abre o formulário (formulario.gs + Formulario.html).
  *  - "Formatar abas": aplica o visual padrão a todas as abas (formatar-planilha.gs).
  *  - "Configurar": guarda o Deploy Hook do Vercel e agenda uma atualização diária às 6h.
+ *  - "Instagram": o agente que transforma posts da liga em linhas da planilha (agente-instagram.gs).
  * O link do Deploy Hook fica nas propriedades do script, não numa célula: quem só vê a planilha não o vê.
  */
 
@@ -15,6 +16,15 @@ function onOpen() {
     .addSeparator()
     .addItem("Adicionar linha nesta aba…", "abrirFormulario")
     .addItem("Formatar abas", "formatarAbas")
+    .addSeparator()
+    .addSubMenu(
+      SpreadsheetApp.getUi()
+        .createMenu("Instagram")
+        .addItem("Buscar posts agora", "buscarInstagram")
+        .addItem("Publicar aprovados", "publicarAprovados")
+        .addSeparator()
+        .addItem("Configurar", "configurarInstagram"),
+    )
     .addSeparator()
     .addItem("Configurar", "configurar")
     .addToUi();
@@ -49,7 +59,10 @@ function configurar() {
   if (!/^https:\/\/api\.vercel\.com\//.test(hook))
     return ui.alert("Esse não parece um Deploy Hook do Vercel.");
   PropertiesService.getScriptProperties().setProperty("DEPLOY_HOOK", hook);
-  ScriptApp.getProjectTriggers().forEach((t) => ScriptApp.deleteTrigger(t));
+  // Só o agendamento deste arquivo; os do agente do Instagram ficam.
+  ScriptApp.getProjectTriggers()
+    .filter((t) => t.getHandlerFunction() === "atualizarSite")
+    .forEach((t) => ScriptApp.deleteTrigger(t));
   ScriptApp.newTrigger("atualizarSite").timeBased().everyDays(1).atHour(6).create();
   ui.alert(
     "Pronto. Use o menu Site → Atualizar o site agora. O site também se atualiza sozinho todo dia às 6h.",
