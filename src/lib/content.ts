@@ -137,8 +137,9 @@ export function getIssue(slug: string) {
   return getIssues().find((i) => i.slug === slug);
 }
 
+/** The newest edition: whatever the league published last is the one in the spotlight. */
 export function getFeaturedIssue() {
-  return getIssues().find((i) => i.featured) ?? getIssues()[0];
+  return getIssues()[0];
 }
 
 // ── Team, areas, partners, competitions ─────────────────────────────────────────
