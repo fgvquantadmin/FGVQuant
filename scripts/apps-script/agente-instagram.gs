@@ -392,6 +392,7 @@ function publicarAprovados() {
   if (n < 1) return toast("A aba Instagram está vazia.");
   const linhas = aba.getRange(2, 1, n, CABECALHO_IG.length).getValues();
   const token = PropertiesService.getScriptProperties().getProperty("IG_TOKEN");
+  const chave = PropertiesService.getScriptProperties().getProperty("ANTHROPIC_KEY");
   let publicadas = 0;
   let erros = 0;
 
@@ -413,17 +414,17 @@ function publicarAprovados() {
         valores[c.coluna] = paraFormulario(c, v);
       });
       const foto = campos.find((c) => c.nome === "Foto");
+      let notaFoto = "";
       if (foto && !valores[foto.coluna] && token) {
-        const img = imagemDoPost(postAtualizado(l[COL.ID - 1], token));
+        const img = fotoDoPost(l[COL.ID - 1], token, chave);
+        notaFoto = img ? ", foto recortada" : ", sem foto (o post não tem fotografia)";
         if (img)
-          arquivos[foto.coluna] = {
-            nome: "instagram." + img.tipo.split("/")[1].replace("jpeg", "jpg"),
-            tipo: img.tipo,
-            base64: img.base64,
-          };
+          arquivos[foto.coluna] = { nome: "instagram.jpg", tipo: img.tipo, base64: img.base64 };
       }
       const linha = salvarLinha(destino, valores, arquivos);
-      aba.getRange(linhaIg, COL.Status).setValue("Publicado (" + destino + ", linha " + linha + ")");
+      aba
+        .getRange(linhaIg, COL.Status)
+        .setValue("Publicado (" + destino + ", linha " + linha + notaFoto + ")");
       publicadas++;
     } catch (e) {
       aba.getRange(linhaIg, COL.Status).setValue("Erro: " + e.message);
@@ -491,6 +492,172 @@ function postAtualizado(id, token) {
     { muteHttpExceptions: true },
   );
   return res.getResponseCode() === 200 ? JSON.parse(res.getContentText()) : {};
+}
+
+// ── recorte da foto ─────────────────────────────────────────────────────────────
+
+/**
+ * A fotografia do post, recortada sem moldura, logo, texto ou fundo, em JPEG base64; ou null se o
+ * post não tiver fotografia. Num carrossel, o Claude escolhe a melhor imagem entre os slides.
+ * O recorte é feito pelo images.weserv.nl, um serviço público de imagens (o Apps Script não
+ * recorta imagens); se ele falhar, salva a imagem inteira em vez de nada.
+ */
+function fotoDoPost(id, token, chave) {
+  const res = UrlFetchApp.fetch(
+    igHost() +
+      "/" +
+      id +
+      "?fields=" +
+      encodeURIComponent("media_type,media_url,thumbnail_url,children{media_type,media_url,thumbnail_url}") +
+      "&access_token=" +
+      token,
+    { muteHttpExceptions: true },
+  );
+  if (res.getResponseCode() !== 200) return null;
+  const post = JSON.parse(res.getContentText());
+  const itens = post.children && post.children.data ? post.children.data : [post];
+  const imagens = itens
+    .slice(0, 6)
+    .map((it) => (it.media_type === "VIDEO" ? it.thumbnail_url : it.media_url))
+    .filter(Boolean)
+    .map((url) => {
+      try {
+        const bytes = UrlFetchApp.fetch(url).getBlob().getBytes();
+        const tam = tamanhoDaImagem(bytes);
+        return tam && bytes.length < 4.5 * 1024 * 1024 ? { url: url, bytes: bytes, tam: tam } : null;
+      } catch (e) {
+        return null;
+      }
+    })
+    .filter(Boolean);
+  if (!imagens.length) return null;
+
+  const caixa = acharFoto(imagens, chave);
+  if (!caixa || !caixa.imagem) return null;
+  const im = imagens[caixa.imagem - 1];
+  if (!im) return null;
+
+  // fração → pixels, entrando 0,5% em cada lado para não sobrar borda
+  const folga = 0.005;
+  const x = Math.max(0, caixa.x + folga);
+  const y = Math.max(0, caixa.y + folga);
+  const w = Math.min(1 - x, caixa.largura - 2 * folga);
+  const h = Math.min(1 - y, caixa.altura - 2 * folga);
+  if (!(w > 0.05 && h > 0.05)) return null;
+  const inteira = { tipo: "image/jpeg", base64: Utilities.base64Encode(im.bytes) };
+  if (x < 0.01 && y < 0.01 && w > 0.98 && h > 0.98) return inteira; // já é só a foto
+
+  const px = (v, total) => Math.round(v * total);
+  const recorte =
+    "https://images.weserv.nl/?url=" +
+    encodeURIComponent(im.url) +
+    "&cx=" + px(x, im.tam.largura) +
+    "&cy=" + px(y, im.tam.altura) +
+    "&cw=" + px(w, im.tam.largura) +
+    "&ch=" + px(h, im.tam.altura) +
+    "&output=jpg&q=90";
+  try {
+    const r = UrlFetchApp.fetch(recorte, { muteHttpExceptions: true });
+    if (r.getResponseCode() === 200 && /^image\//.test(r.getBlob().getContentType()))
+      return { tipo: "image/jpeg", base64: Utilities.base64Encode(r.getBlob().getBytes()) };
+  } catch (e) {
+    // sem o serviço de recorte: fica a imagem inteira
+  }
+  return inteira;
+}
+
+/** Pede ao Claude qual imagem tem a fotografia e o retângulo exato dela, em frações (0 a 1). */
+function acharFoto(imagens, chave) {
+  const conteudo = [];
+  imagens.forEach((im, i) => {
+    conteudo.push({ type: "text", text: "Imagem " + (i + 1) + " (" + im.tam.largura + "×" + im.tam.altura + " px):" });
+    conteudo.push({
+      type: "image",
+      source: { type: "base64", media_type: "image/jpeg", data: Utilities.base64Encode(im.bytes) },
+    });
+  });
+  conteudo.push({
+    type: "text",
+    text:
+      "Estas são as imagens de um post do Instagram de uma liga universitária. Escolha a imagem que tem a melhor " +
+      "fotografia real do evento (pessoas, palco, sala, visita) e marque o retângulo exato da fotografia dentro dela: " +
+      "só a área da foto, sem moldura, faixas, fundo colorido, logos, textos ou elementos gráficos em volta. " +
+      "Se a foto já ocupa a imagem inteira, use x=0, y=0, largura=1, altura=1. " +
+      "Se nenhuma imagem tiver fotografia real (só arte, texto ou logo), use imagem=0. " +
+      "Responda chamando a ferramenta recortar.",
+  });
+  const res = UrlFetchApp.fetch("https://api.anthropic.com/v1/messages", {
+    method: "post",
+    contentType: "application/json",
+    headers: { "x-api-key": chave, "anthropic-version": "2023-06-01" },
+    muteHttpExceptions: true,
+    payload: JSON.stringify({
+      model: MODELO,
+      max_tokens: 500,
+      tools: [
+        {
+          name: "recortar",
+          description: "Imagem escolhida e o retângulo da fotografia, em frações da largura e da altura.",
+          input_schema: {
+            type: "object",
+            properties: {
+              imagem: { type: "integer", description: "Número da imagem (1, 2…), ou 0 se não houver fotografia." },
+              x: { type: "number", description: "Borda esquerda da foto, de 0 a 1." },
+              y: { type: "number", description: "Borda de cima da foto, de 0 a 1." },
+              largura: { type: "number", description: "Largura da foto, de 0 a 1." },
+              altura: { type: "number", description: "Altura da foto, de 0 a 1." },
+            },
+            required: ["imagem", "x", "y", "largura", "altura"],
+          },
+        },
+      ],
+      tool_choice: { type: "auto" },
+      messages: [{ role: "user", content: conteudo }],
+    }),
+  });
+  if (res.getResponseCode() !== 200) return null;
+  const uso = (JSON.parse(res.getContentText()).content || []).find((b) => b.type === "tool_use");
+  return uso ? uso.input : null;
+}
+
+/** Largura e altura de um JPEG ou PNG, lidas do cabeçalho; null para outros formatos. */
+function tamanhoDaImagem(bytes) {
+  const b = (i) => bytes[i] & 0xff;
+  if (b(0) === 0x89 && b(1) === 0x50)
+    return {
+      largura: (b(16) << 24) | (b(17) << 16) | (b(18) << 8) | b(19),
+      altura: (b(20) << 24) | (b(21) << 16) | (b(22) << 8) | b(23),
+    };
+  if (b(0) !== 0xff || b(1) !== 0xd8) return null;
+  let i = 2;
+  while (i + 9 < bytes.length) {
+    if (b(i) !== 0xff) {
+      i++;
+      continue;
+    }
+    const marca = b(i + 1);
+    const tam = (b(i + 2) << 8) | b(i + 3);
+    if (marca >= 0xc0 && marca <= 0xcf && marca !== 0xc4 && marca !== 0xc8 && marca !== 0xcc)
+      return { altura: (b(i + 5) << 8) | b(i + 6), largura: (b(i + 7) << 8) | b(i + 8) };
+    i += 2 + tam;
+  }
+  return null;
+}
+
+/** Teste manual pelo editor: recorta a foto do post da linha 2 da aba Instagram e salva em Arquivos do site/_teste. */
+function testarRecorte() {
+  const props = PropertiesService.getScriptProperties();
+  const aba = abaInstagram();
+  const id = String(aba.getRange(2, COL.ID).getValue());
+  const img = fotoDoPost(id, props.getProperty("IG_TOKEN"), props.getProperty("ANTHROPIC_KEY"));
+  if (!img) return Logger.log("Sem foto nesse post.");
+  const raiz = pastaDeFotos(SpreadsheetApp.getActive());
+  const achada = raiz.getFoldersByName("_teste");
+  const pasta = achada.hasNext() ? achada.next() : raiz.createFolder("_teste");
+  const arquivo = pasta.createFile(
+    Utilities.newBlob(Utilities.base64Decode(img.base64), img.tipo, "teste-recorte-" + id + ".jpg"),
+  );
+  Logger.log(arquivo.getUrl());
 }
 
 // ── utilidades ──────────────────────────────────────────────────────────────────
