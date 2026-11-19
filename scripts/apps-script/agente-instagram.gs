@@ -422,6 +422,7 @@ function publicarAprovados() {
           arquivos[foto.coluna] = { nome: "instagram.jpg", tipo: img.tipo, base64: img.base64 };
       }
       const linha = salvarLinha(destino, valores, arquivos);
+      corrigirDatas(destino, linha, lidos, campos);
       aba
         .getRange(linhaIg, COL.Status)
         .setValue("Publicado (" + destino + ", linha " + linha + notaFoto + ")");
@@ -461,6 +462,76 @@ function lerCampos(texto) {
       if (valor) campos[nome] = valor;
     });
   return campos;
+}
+
+/**
+ * O salvarLinha grava a data à meia-noite no fuso do script; se o fuso da planilha for outro, o dia
+ * volta um. Regrava as colunas de data ao meio-dia, que cai no mesmo dia em qualquer fuso do Brasil.
+ */
+function corrigirDatas(destino, linha, lidos, campos) {
+  const aba = SpreadsheetApp.getActive().getSheetByName(destino);
+  campos
+    .filter((c) => c.tipo === "data" && lidos[c.nome])
+    .forEach((c) => {
+      const m = String(lidos[c.nome]).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+      if (m)
+        aba
+          .getRange(linha, c.coluna)
+          .setValue(new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]), 12))
+          .setNumberFormat("dd/mm/yyyy");
+    });
+}
+
+/**
+ * Uso único: refaz os eventos publicados antes do recorte de foto. Para cada linha "Publicado
+ * (Eventos, linha N)" da aba Instagram, salva a foto recortada com um nome novo e troca a célula
+ * Foto (a imagem antiga fica na pasta, sem uso), e corrige a data. Depois pede a atualização do site.
+ */
+function refazerPublicados() {
+  const props = PropertiesService.getScriptProperties();
+  const token = props.getProperty("IG_TOKEN");
+  const chave = props.getProperty("ANTHROPIC_KEY");
+  const ss = SpreadsheetApp.getActive();
+  const ig = abaInstagram();
+  const eventos = ss.getSheetByName("Eventos");
+  const campos = camposDaAba("Eventos");
+  const colFoto = campos.find((c) => c.nome === "Foto");
+  const raiz = pastaDeFotos(ss);
+  const achada = raiz.getFoldersByName("Eventos");
+  const pasta = achada.hasNext() ? achada.next() : raiz.createFolder("Eventos");
+  const feitos = [];
+  ig.getRange(2, 1, ig.getLastRow() - 1, CABECALHO_IG.length)
+    .getValues()
+    .forEach((l) => {
+      const m = String(l[COL.Status - 1]).match(/^Publicado \(Eventos, linha (\d+)/);
+      if (!m) return;
+      const linha = Number(m[1]);
+      const lidos = lerCampos(l[COL.Campos - 1]);
+      corrigirDatas("Eventos", linha, lidos, campos);
+      if (!colFoto) return;
+      const img = fotoDoPost(String(l[COL.ID - 1]), token, chave);
+      if (!img) return feitos.push("linha " + linha + ": sem foto");
+      const antigo = String(eventos.getRange(linha, colFoto.coluna).getValue() || "foto.jpg");
+      let nome = antigo.replace(/\.[^.]+$/, "") + "-foto.jpg";
+      for (let n = 2; existeArquivo(raiz, nome); n++) nome = antigo.replace(/\.[^.]+$/, "") + "-foto-" + n + ".jpg";
+      pasta.createFile(Utilities.newBlob(Utilities.base64Decode(img.base64), img.tipo, nome));
+      eventos.getRange(linha, colFoto.coluna).setValue(nome);
+      feitos.push("linha " + linha + ": " + nome);
+    });
+  Logger.log(feitos.join("\n"));
+  try {
+    atualizarSite();
+  } catch (e) {
+    Logger.log("Site não atualizado agora: " + e.message);
+  }
+}
+
+/** Algum arquivo com este nome em qualquer subpasta? (o site acha as fotos só pelo nome) */
+function existeArquivo(pasta, nome) {
+  if (pasta.getFilesByName(nome).hasNext()) return true;
+  for (const filhas = pasta.getFolders(); filhas.hasNext(); )
+    if (existeArquivo(filhas.next(), nome)) return true;
+  return false;
 }
 
 /** "Data (dd/mm/aaaa)" → "Data": tira o formato que o modelo às vezes copia para o nome da coluna. */
